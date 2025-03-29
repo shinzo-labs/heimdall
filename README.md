@@ -6,23 +6,14 @@ Heimdall is an MCP (Model Context Protocol) server that proxies other MCP server
 
 ## Installation
 
-1. Run install script:
+1. Run setup script:
 ```bash
-npx @shinzolabs/heimdall install
+npx @shinzolabs/heimdall setup <path/to/current/config.json> <optional: path/to/local/heimdall>
 // or
 git clone https://github.com/shinzo-labs/heimdall.git
-./scripts/install.sh
+pnpm i && pnpm build && pnpm run setup <path/to/current/config.json> <optional: path/to/local/heimdall>
 ```
 
-2. (Optional) You may modify `~/.heimdall/controls.json` manually and Heimdall will refresh the available tools automatically.
-
-## Add New Servers
-
-1. Run the `add_server` script:
-```bash
-npx @shinzolabs/heimdall add-server
-// or
-./scripts/add_server.sh
-```
+2. Modify `~/.heimdall/controls.json` and `~/.heimdall/config.json` manually and Heimdall will refresh the available tools automatically.
 
 ## TODO: finish the rest

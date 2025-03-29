@@ -31,6 +31,23 @@ type ServerProcess = {
   stderr: NodeJS.ReadableStream
 }
 
+type JsonRpcRequest = {
+  jsonrpc: "2.0"
+  id: number
+  method: string
+  params: Record<string, any>
+}
+
+type JsonRpcResponse = {
+  jsonrpc: "2.0"
+  id: number
+  result?: any
+  error?: {
+    message: string
+    code?: number
+  }
+}
+
 const createServer = () => new McpServer({
   name: "Heimdall",
   version: "1.0.0",
@@ -46,6 +63,62 @@ const formatResponse = (response: any) => ({ content: [{ type: "text" as const, 
 
 const getCompositeToolName = (serverId: string, toolName: string) => `${serverId}/${toolName}`
 
+const createJsonRpcRequest = (method: string, params: Record<string, any> = {}): JsonRpcRequest => ({
+  jsonrpc: "2.0",
+  id: Date.now(),
+  method,
+  params
+})
+
+const sendJsonRpcRequest = async <T>(
+  serverProcess: ServerProcess,
+  request: JsonRpcRequest,
+  timeout: number = TOOL_EXECUTION_TIMEOUT
+): Promise<T> => {
+  return new Promise((resolve, reject) => {
+    let responseData = ''
+
+    const responseHandler = (data: Buffer) => {
+      responseData += data.toString()
+
+      try {
+        const response = JSON.parse(responseData) as JsonRpcResponse
+
+        if (response.id === request.id) {
+          cleanup()
+
+          if (response.error) {
+            reject(new Error(response.error.message))
+          } else {
+            resolve(response.result)
+          }
+        }
+      } catch (e) {
+        // Incomplete JSON, keep waiting
+      }
+    }
+
+    const cleanup = () => {
+      serverProcess.stdout.removeListener('data', responseHandler)
+      clearTimeout(timeoutId)
+    }
+
+    const timeoutId = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Request timed out for method ${request.method}`))
+    }, timeout)
+
+    serverProcess.stdout.on('data', responseHandler)
+    serverProcess.stdin.write(JSON.stringify(request) + '\n')
+  })
+}
+
+const listServerTools = async (serverId: string, serverProcess: ServerProcess): Promise<string[]> => {
+  const request = createJsonRpcRequest('tools/list')
+  const response = await sendJsonRpcRequest<{ tools: Array<{ name: string }> }>(serverProcess, request)
+  return response.tools?.map(tool => tool.name) || []
+}
+
 const executeToolOnServer = async (serverId: string, toolName: string, params: any): Promise<any> => {
   try {
     logger("info", `Executing tool: ${toolName} on server: ${serverId}`)
@@ -53,49 +126,13 @@ const executeToolOnServer = async (serverId: string, toolName: string, params: a
     const serverProcess = serverProcesses.get(serverId)
     if (!serverProcess) throw new Error(`Server ${serverId} not found`)
 
-    const request = {
-      jsonrpc: "2.0",
-      id: Date.now(),
-      method: "tool/execute",
-      params: {
-        name: toolName,
-        arguments: params
-      }
-    }
-
-    const response = await new Promise((resolve, reject) => {
-      let responseData = ''
-
-      const responseHandler = (data: Buffer) => {
-        responseData += data.toString()
-
-        try {
-          const response = JSON.parse(responseData)
-
-          if (response.id === request.id) {
-            serverProcess.stdout.removeListener('data', responseHandler)
-
-            if (response.error) {
-              reject(new Error(response.error.message))
-            } else {
-              resolve(response.result)
-            }
-          }
-        } catch (e) {
-          // Incomplete JSON, keep waiting
-        }
-      }
-
-      serverProcess.stdout.on('data', responseHandler)
-
-      serverProcess.stdin.write(JSON.stringify(request) + '\n')
-
-      setTimeout(() => {
-        serverProcess.stdout.removeListener('data', responseHandler)
-        reject(new Error(`Tool execution timed out for ${toolName} on server ${serverId}`))
-      }, TOOL_EXECUTION_TIMEOUT)
+    const request = createJsonRpcRequest('tool/execute', {
+      name: toolName,
+      arguments: params
     })
 
+    const response = await sendJsonRpcRequest(serverProcess, request)
+    
     logger("info", `Tool ${toolName} returned: ${JSON.stringify(response)}`)
     return formatResponse(response)
   } catch (error: any) {
@@ -264,8 +301,97 @@ const updateServerProcesses = async (clientConfig: ClientConfig) => {
   }
 }
 
+const discoverServerTools = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]): Promise<string[]> => {
+  try {
+    // Start the server temporarily to discover tools
+    await startServer(serverId, serverConfig)
+    
+    // Get the server process
+    const serverProcess = serverProcesses.get(serverId)
+    if (!serverProcess) throw new Error(`Server ${serverId} failed to start`)
+
+    // Get tool list from server
+    const tools = await listServerTools(serverId, serverProcess)
+
+    // Stop the server after discovery
+    await stopServer(serverId)
+
+    return tools
+  } catch (error: any) {
+    logger("error", `Failed to discover tools for server ${serverId}: ${error.message}`)
+    // Make sure server is stopped even if discovery fails
+    await stopServer(serverId)
+    return []
+  }
+}
+
+const setup = async () => {
+  logger("info", "Setting up Heimdall")
+
+  const clientConfigFile = path.join(CONFIG_DIR, "config.json")
+  let clientConfig: ClientConfig = { mcpServers: {} }
+  
+  if (fs.existsSync(clientConfigFile)) {
+    logger("info", "config.json already exists, skipping config.json creation")
+    clientConfig = JSON.parse(fs.readFileSync(clientConfigFile, "utf-8"))
+  } else {
+    if (process.argv[3]) {
+      logger("info", `Using config file: ${process.argv[3]}`)
+      clientConfig = JSON.parse(fs.readFileSync(process.argv[3], "utf-8"))
+      fs.writeFileSync(clientConfigFile, JSON.stringify(clientConfig, null, 2))
+      fs.writeFileSync(process.argv[3], JSON.stringify({
+        mcpServers: {
+          heimdall: {
+            command: "npx",
+            args: [process.argv[4] || "@shinzolabs/heimdall"]
+          }
+        }
+      }, null, 2))
+      logger("info", "config.json created")
+    } else {
+      logger("info", "No config file provided, creating empty config.json")
+      fs.writeFileSync(clientConfigFile, JSON.stringify(clientConfig, null, 2))
+      logger("info", "Empty config.json created")
+    }
+  }
+
+  const controlsConfigFile = path.join(CONFIG_DIR, "controls.json")
+  if (!fs.existsSync(controlsConfigFile)) {
+    logger("info", "Discovering available tools from all servers...")
+    
+    const authorizedMcpServers: ControlConfig['authorizedMcpServers'] = {}
+    
+    // Discover tools for each server
+    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
+      const tools = await discoverServerTools(serverId, serverConfig)
+      if (tools.length > 0) {
+        authorizedMcpServers[serverId] = {
+          authorizedTools: tools
+        }
+        logger("info", `Discovered ${tools.length} tools from server ${serverId}`)
+      }
+    }
+
+    const controlsConfig: ControlConfig = { authorizedMcpServers }
+    fs.writeFileSync(controlsConfigFile, JSON.stringify(controlsConfig, null, 2))
+
+    const toolCount = Object.values(authorizedMcpServers).reduce((acc, server) => acc + server.authorizedTools.length, 0)
+    logger("info", `Created controls.json with ${toolCount} discovered tools`)
+  } else {
+    logger("info", "controls.json already exists, skipping controls.json creation")
+  }
+}
+
 const main = async () => {
   try {
+    if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
+    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true })
+
+    if (process.argv[2] === "setup") {
+      await setup()
+      process.exit(0)
+    }
+
     const { clientConfig, controlConfig } = await loadConfig()
 
     await updateServerProcesses(clientConfig)

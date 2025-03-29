@@ -7,9 +7,9 @@
     "heimdall": "./dist/index.js"
   },
   "scripts": {
-    "start": "node index.js",
+    "setup": "node dist/index.js setup",
     "build": "tsc -p tsconfig.json",
-    "auth": "node ./dist/index.js auth"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
