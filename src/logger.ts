@@ -1,5 +1,8 @@
-import { LOG_PATH } from "./config.js"
 import fs from "fs"
+import path from 'path'
+import { LOG_DIR } from "./config.js"
+
+const HEIMDALL_LOG_PATH = path.join(LOG_DIR, 'heimdall.log')
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
@@ -15,7 +18,7 @@ export const logger = (level: LogLevel, message: string, data?: any) => {
   if (data) log.data = data
 
   try {
-    fs.appendFileSync(LOG_PATH, JSON.stringify(log) + '\n')
+    fs.appendFileSync(HEIMDALL_LOG_PATH, JSON.stringify(log) + '\n')
   } catch (error: any) {
     console.error('Error writing to log file:', { error: error.message })
   }

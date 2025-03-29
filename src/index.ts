@@ -1,53 +1,242 @@
-// Heimdall
-
-/*
-
-Heimdall is an MCP (Model Context Protocol) server that proxies other MCP
-servers and enables granular authorization control for your MCPs. The following
-steps describe how Heimdall functions:
-
-1. Compute config directory path (default: `~/.heimdall/`)
-2. Open MCP server config `~/.heimdall/config.json`
-3. For each server and start command, start the server in a new process and pipe the output to a log file.
-4. Open authorized tools from `~/.heimdall/controls.json`
-5. For each server, append all authorized tools to Heimdall's tool set and route requests to the correct server.
-6. Poll every 10 seconds for new or updated tools from `~/.heimdall/controls.json` and update Heimdall's tool set accordingly.
-
-*/
-
-import { logger } from './logger.js'
-import { CONFIG_DIR } from './config.js'
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { z } from 'zod'
-const server = new McpServer({
+import fs from 'fs'
+import path from 'path'
+import { spawn } from 'child_process'
+import { logger } from './logger.js'
+import { CONFIG_DIR, LOG_DIR, POLL_INTERVAL, TOOL_EXECUTION_TIMEOUT } from './config.js'
+
+type ClientConfig = {
+  mcpServers: {
+    [key: string]: {
+      command: string
+      args: string[]
+      env?: Record<string, string>
+    }
+  }
+}
+
+type ControlConfig = {
+  authorizedMcpServers: {
+    [key: string]: {
+      authorizedTools: string[]
+    }
+  }
+}
+
+type ServerProcess = {
+  process: ReturnType<typeof spawn>
+  stdin: NodeJS.WritableStream
+  stdout: NodeJS.ReadableStream
+  stderr: NodeJS.ReadableStream
+}
+
+const createServer = () => new McpServer({
   name: "Heimdall",
   version: "1.0.0",
   description: "An MCP server that proxies other MCP servers and enables granular authorization control for your MCPs."
 })
 
+let server = createServer()
+let transport: StdioServerTransport | null = null
+const serverProcesses = new Map<string, ServerProcess>()
+const registeredTools = new Set<string>()
+
 const formatResponse = (response: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(response) }] })
 
-const handleTool = async (toolName: string, apiCall: () => Promise<any>) => {
+const getCompositeToolName = (serverId: string, toolName: string) => `${serverId}/${toolName}`
+
+const executeToolOnServer = async (serverId: string, toolName: string, params: any): Promise<any> => {
   try {
-    logger("info", `Calling tool: ${toolName}`)
-    const response = await apiCall()
+    logger("info", `Executing tool: ${toolName} on server: ${serverId}`)
+
+    const serverProcess = serverProcesses.get(serverId)
+    if (!serverProcess) throw new Error(`Server ${serverId} not found`)
+
+    const request = {
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method: "tool/execute",
+      params: {
+        name: toolName,
+        arguments: params
+      }
+    }
+
+    const response = await new Promise((resolve, reject) => {
+      let responseData = ''
+
+      const responseHandler = (data: Buffer) => {
+        responseData += data.toString()
+
+        try {
+          const response = JSON.parse(responseData)
+
+          if (response.id === request.id) {
+            serverProcess.stdout.removeListener('data', responseHandler)
+
+            if (response.error) {
+              reject(new Error(response.error.message))
+            } else {
+              resolve(response.result)
+            }
+          }
+        } catch (e) {
+          // Incomplete JSON, keep waiting
+        }
+      }
+
+      serverProcess.stdout.on('data', responseHandler)
+
+      serverProcess.stdin.write(JSON.stringify(request) + '\n')
+
+      setTimeout(() => {
+        serverProcess.stdout.removeListener('data', responseHandler)
+        reject(new Error(`Tool execution timed out for ${toolName} on server ${serverId}`))
+      }, TOOL_EXECUTION_TIMEOUT)
+    })
+
     logger("info", `Tool ${toolName} returned: ${JSON.stringify(response)}`)
     return formatResponse(response)
   } catch (error: any) {
-    logger("error", `Error calling tool ${toolName}: ${error.message}`)
-    return formatResponse(`Error: ${error.message}`)
+    logger("error", `Error executing tool ${toolName} on server ${serverId}: ${error.message}`)
+    return formatResponse({ error: error.message })
   }
 }
 
-server.tool("tool1",
-  "Description of tool1",
-  {
-    "param1": z.string(),
-    "param2": z.number()
-  },
-  async (params: any) => handleTool("tool1", async () => await Promise.resolve(params))
-)
+const startServer = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]) => {
+  try {
+    const logFile = fs.createWriteStream(path.join(LOG_DIR, `${serverId}.log`))
 
-const transport = new StdioServerTransport()
-await server.connect(transport)
+    const serverEnv = { ...process.env, ...serverConfig.env }
+
+    const childProcess = spawn(serverConfig.command, serverConfig.args, {
+      shell: true,
+      cwd: CONFIG_DIR,
+      env: serverEnv,
+      stdio: ['pipe', 'pipe', 'pipe']
+    })
+
+    childProcess.on('error', (error) => {
+      logger("error", `Server ${serverId} process error: ${error.message}`)
+    })
+
+    childProcess.on('exit', (code, signal) => {
+      logger("info", `Server ${serverId} exited with code ${code} and signal ${signal}`)
+      serverProcesses.delete(serverId)
+    })
+
+    childProcess.stdout.pipe(logFile)
+    childProcess.stderr.pipe(logFile)
+
+    serverProcesses.set(serverId, {
+      process: childProcess,
+      stdin: childProcess.stdin,
+      stdout: childProcess.stdout,
+      stderr: childProcess.stderr
+    })
+
+    logger("info", `Started server: ${serverId}`)
+  } catch (error: any) {
+    logger("error", `Failed to start server ${serverId}: ${error.message}`)
+  }
+}
+
+const loadConfig = async () => {
+  try {
+    const clientConfigPath = path.join(CONFIG_DIR, 'config.json')
+    if (!fs.existsSync(clientConfigPath)) {
+      throw new Error(`Required config file not found: ${clientConfigPath}`)
+    }
+    const clientConfig = JSON.parse(fs.readFileSync(clientConfigPath, 'utf-8')) as ClientConfig
+
+    const controlsPath = path.join(CONFIG_DIR, 'controls.json')
+    if (!fs.existsSync(controlsPath)) {
+      throw new Error(`Required config file not found: ${controlsPath}`)
+    }
+    const controlConfig = JSON.parse(fs.readFileSync(controlsPath, 'utf-8')) as ControlConfig
+
+    return { clientConfig, controlConfig }
+  } catch (error: any) {
+    logger("error", `Failed to load config: ${error.message}`)
+    throw error
+  }
+}
+
+// Function to update tools based on controls.json
+const updateTools = async (controlConfig: ControlConfig) => {
+  try {
+    const currentToolNames = new Set<string>()
+    for (const [serverId, serverAuth] of Object.entries(controlConfig.authorizedMcpServers)) {
+      for (const toolName of serverAuth.authorizedTools) {
+        currentToolNames.add(getCompositeToolName(serverId, toolName))
+      }
+    }
+
+    const needsRestart = Array.from(registeredTools).some(toolName => !currentToolNames.has(toolName))
+
+    if (needsRestart) {
+      logger("info", "Tools were removed, creating new server instance")
+      // Create new server instance and transport
+      server = createServer()
+      transport = new StdioServerTransport()
+      await server.connect(transport)
+      // Clear registered tools since we're starting fresh
+      registeredTools.clear()
+    }
+
+    for (const [serverId, serverAuth] of Object.entries(controlConfig.authorizedMcpServers)) {
+      for (const toolName of serverAuth.authorizedTools) {
+        const compositeToolName = getCompositeToolName(serverId, toolName)
+        if (!needsRestart && registeredTools.has(compositeToolName)) continue
+
+        server.tool(
+          compositeToolName,
+          `Authorized tool: ${toolName} from server ${serverId}`,
+          {}, // Parameters will be passed through directly to the underlying server // TODO: update this to pull parameters from spec returned by calling server with `{"method":"tools/list","params":{},"jsonrpc":"2.0","id":2}`
+          async (params: any) => executeToolOnServer(serverId, toolName, params)
+        )
+
+        registeredTools.add(compositeToolName)
+      }
+    }
+
+    logger("info", needsRestart ? "MCP server restarted with updated tools" : "Updated tools from controls.json")
+  } catch (error: any) {
+    logger("error", `Failed to update tools: ${error.message}`)
+  }
+}
+
+const main = async () => {
+  try {
+    const { clientConfig, controlConfig } = await loadConfig()
+
+    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
+      await startServer(serverId, serverConfig)
+    }
+
+    await updateTools(controlConfig)
+
+    transport = new StdioServerTransport()
+    if (transport) {
+      await server.connect(transport)
+    }
+
+    setInterval(async () => {
+      try {
+        const { controlConfig } = await loadConfig()
+        await updateTools(controlConfig)
+      } catch (error: any) {
+        logger("error", `Polling update failed: ${error.message}`)
+      }
+    }, POLL_INTERVAL)
+
+    logger("info", "Heimdall initialized successfully")
+  } catch (error: any) {
+    logger("error", `Initialization failed: ${error.message}`)
+    process.exit(1)
+  }
+}
+
+await main()
+
