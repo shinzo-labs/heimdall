@@ -207,14 +207,68 @@ const updateTools = async (controlConfig: ControlConfig) => {
   }
 }
 
+const stopServer = async (serverId: string) => {
+  const serverProcess = serverProcesses.get(serverId)
+  if (!serverProcess) return
+
+  logger("info", `Stopping server: ${serverId}`)
+  serverProcess.process.kill()
+  serverProcesses.delete(serverId)
+}
+
+const updateServerProcesses = async (clientConfig: ClientConfig) => {
+  try {
+    const currentServerIds = new Set(serverProcesses.keys())
+    const newServerIds = new Set(Object.keys(clientConfig.mcpServers))
+
+    // Stop removed servers
+    for (const serverId of currentServerIds) {
+      if (!newServerIds.has(serverId)) {
+        await stopServer(serverId)
+        logger("info", `Removed server: ${serverId}`)
+      }
+    }
+
+    // Start new servers and update existing ones
+    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
+      const currentProcess = serverProcesses.get(serverId)
+      
+      // Check if config changed for existing server
+      if (currentProcess) {
+        const currentConfig = JSON.stringify({
+          command: serverConfig.command,
+          args: serverConfig.args,
+          env: serverConfig.env
+        })
+        
+        const existingConfig = JSON.stringify({
+          command: serverConfig.command,
+          args: serverConfig.args,
+          env: serverConfig.env
+        })
+
+        if (currentConfig !== existingConfig) {
+          await stopServer(serverId)
+          await startServer(serverId, serverConfig)
+          logger("info", `Updated server: ${serverId}`)
+        }
+      } else {
+        // Start new server
+        await startServer(serverId, serverConfig)
+        logger("info", `Added new server: ${serverId}`)
+      }
+    }
+  } catch (error: any) {
+    logger("error", `Failed to update server processes: ${error.message}`)
+    throw error
+  }
+}
+
 const main = async () => {
   try {
     const { clientConfig, controlConfig } = await loadConfig()
 
-    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
-      await startServer(serverId, serverConfig)
-    }
-
+    await updateServerProcesses(clientConfig)
     await updateTools(controlConfig)
 
     transport = new StdioServerTransport()
@@ -224,7 +278,9 @@ const main = async () => {
 
     setInterval(async () => {
       try {
-        const { controlConfig } = await loadConfig()
+        const { clientConfig, controlConfig } = await loadConfig()
+
+        await updateServerProcesses(clientConfig)
         await updateTools(controlConfig)
       } catch (error: any) {
         logger("error", `Polling update failed: ${error.message}`)
