@@ -5,6 +5,7 @@ import path from 'path'
 import { spawn } from 'child_process'
 import { logger } from './logger.js'
 import { CONFIG_DIR, LOG_DIR, POLL_INTERVAL, TOOL_EXECUTION_TIMEOUT } from './config.js'
+import { z } from 'zod'
 
 type ClientConfig = {
   mcpServers: {
@@ -29,6 +30,12 @@ type ServerProcess = {
   stdin: NodeJS.WritableStream
   stdout: NodeJS.ReadableStream
   stderr: NodeJS.ReadableStream
+}
+
+type ToolDetails = {
+  name: string
+  description: string
+  inputSchema: Record<string, any>
 }
 
 type JsonRpcRequest = {
@@ -61,7 +68,7 @@ const registeredTools = new Set<string>()
 
 const formatResponse = (response: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(response) }] })
 
-const getCompositeToolName = (serverId: string, toolName: string) => `${serverId}/${toolName}`
+const getCompositeToolName = (serverId: string, toolName: string) => `${serverId}-${toolName}`
 
 const createJsonRpcRequest = (method: string, params: Record<string, any> = {}): JsonRpcRequest => ({
   jsonrpc: "2.0",
@@ -113,10 +120,16 @@ const sendJsonRpcRequest = async <T>(
   })
 }
 
-const listServerTools = async (serverId: string, serverProcess: ServerProcess): Promise<string[]> => {
+const listServerTools = async (serverId: string): Promise<ToolDetails[]> => {
+  const serverProcess = serverProcesses.get(serverId)
+  if (!serverProcess) {
+    logger("error", `Server ${serverId} not running, skipping tool details fetch`)
+    return []
+  }
+
   const request = createJsonRpcRequest('tools/list')
-  const response = await sendJsonRpcRequest<{ tools: Array<{ name: string }> }>(serverProcess, request)
-  return response.tools?.map(tool => tool.name) || []
+  const response = await sendJsonRpcRequest<{ tools: ToolDetails[] }>(serverProcess, request)
+  return response.tools || []
 }
 
 const executeToolOnServer = async (serverId: string, toolName: string, params: any): Promise<any> => {
@@ -126,10 +139,7 @@ const executeToolOnServer = async (serverId: string, toolName: string, params: a
     const serverProcess = serverProcesses.get(serverId)
     if (!serverProcess) throw new Error(`Server ${serverId} not found`)
 
-    const request = createJsonRpcRequest('tool/execute', {
-      name: toolName,
-      arguments: params
-    })
+    const request = createJsonRpcRequest('tools/call', { name: toolName, arguments: params })
 
     const response = await sendJsonRpcRequest(serverProcess, request)
     
@@ -200,7 +210,66 @@ const loadConfig = async () => {
   }
 }
 
-// Function to update tools based on controls.json
+const convertJsonSchemaToZod = (schema: Record<string, any>): z.ZodTypeAny => {
+  if (!schema || typeof schema !== 'object') {
+    return z.any()
+  }
+
+  let validator: z.ZodTypeAny
+
+  switch (schema.type) {
+    case 'string': {
+      validator = schema.enum ? z.enum(schema.enum as [string, ...string[]]) : z.string()
+      break
+    }
+    case 'number':
+      validator = z.number()
+      break
+    case 'boolean':
+      validator = z.boolean()
+      break
+    case 'object': {
+      if (!schema.properties) {
+        validator = schema.additionalProperties === false ? z.object({}).strict() : z.record(z.any())
+        break
+      }
+
+      const shape: Record<string, z.ZodTypeAny> = {}
+      for (const [key, value] of Object.entries(schema.properties)) {
+        const propertySchema = convertJsonSchemaToZod(value as Record<string, any>)
+        shape[key] = schema.required?.includes(key) 
+          ? propertySchema 
+          : propertySchema.optional()
+      }
+
+      validator = z.object(shape)
+      break
+    }
+    case 'array':
+      validator = z.array(convertJsonSchemaToZod(schema.items))
+      break
+    default:
+      validator = z.any()
+      break
+  }
+
+  return schema.description ? validator.describe(schema.description) : validator
+}
+
+const convertInputSchemaToParameters = (inputSchema: Record<string, any>): Record<string, z.ZodTypeAny> => {
+  if (!inputSchema?.properties || typeof inputSchema.properties !== 'object') {
+    return {}
+  }
+
+  const parameters: Record<string, z.ZodTypeAny> = {}
+  
+  for (const [key, value] of Object.entries(inputSchema.properties)) {
+    parameters[key] = convertJsonSchemaToZod(value as Record<string, any>)
+  }
+
+  return parameters
+}
+
 const updateTools = async (controlConfig: ControlConfig) => {
   try {
     const currentToolNames = new Set<string>()
@@ -214,23 +283,43 @@ const updateTools = async (controlConfig: ControlConfig) => {
 
     if (needsRestart) {
       logger("info", "Tools were removed, creating new server instance")
-      // Create new server instance and transport
       server = createServer()
       transport = new StdioServerTransport()
       await server.connect(transport)
-      // Clear registered tools since we're starting fresh
       registeredTools.clear()
     }
 
+    // Get tool details from each server
+    const serverToolDetails: Record<string, Record<string, ToolDetails>> = {}
+
+    for (const [serverId, _] of Object.entries(controlConfig.authorizedMcpServers)) {
+      try {
+        const tools = await listServerTools(serverId)
+        serverToolDetails[serverId] = {}
+        tools.forEach(tool => {
+          serverToolDetails[serverId][tool.name] = tool
+        })
+      } catch (error: any) {
+        logger("error", `Failed to fetch tool details from server ${serverId}: ${error.message}`)
+        continue
+      }
+    }
+
     for (const [serverId, serverAuth] of Object.entries(controlConfig.authorizedMcpServers)) {
+      const serverTools = serverToolDetails[serverId]
+
       for (const toolName of serverAuth.authorizedTools) {
         const compositeToolName = getCompositeToolName(serverId, toolName)
         if (!needsRestart && registeredTools.has(compositeToolName)) continue
 
+        const toolDetails = serverTools?.[toolName]
+        
         server.tool(
           compositeToolName,
-          `Authorized tool: ${toolName} from server ${serverId}`,
-          {}, // Parameters will be passed through directly to the underlying server // TODO: update this to pull parameters from spec returned by calling server with `{"method":"tools/list","params":{},"jsonrpc":"2.0","id":2}`
+          toolDetails?.description || `Authorized tool: ${toolName} from server ${serverId}`,
+          toolDetails?.inputSchema 
+            ? convertInputSchemaToParameters(toolDetails.inputSchema)
+            : {},
           async (params: any) => executeToolOnServer(serverId, toolName, params)
         )
 
@@ -303,23 +392,13 @@ const updateServerProcesses = async (clientConfig: ClientConfig) => {
 
 const discoverServerTools = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]): Promise<string[]> => {
   try {
-    // Start the server temporarily to discover tools
     await startServer(serverId, serverConfig)
-    
-    // Get the server process
-    const serverProcess = serverProcesses.get(serverId)
-    if (!serverProcess) throw new Error(`Server ${serverId} failed to start`)
-
-    // Get tool list from server
-    const tools = await listServerTools(serverId, serverProcess)
-
-    // Stop the server after discovery
+    const tools = await listServerTools(serverId)
     await stopServer(serverId)
 
-    return tools
+    return tools.map(tool => tool.name)
   } catch (error: any) {
     logger("error", `Failed to discover tools for server ${serverId}: ${error.message}`)
-    // Make sure server is stopped even if discovery fails
     await stopServer(serverId)
     return []
   }
@@ -339,14 +418,10 @@ const setup = async () => {
       logger("info", `Using config file: ${process.argv[3]}`)
       clientConfig = JSON.parse(fs.readFileSync(process.argv[3], "utf-8"))
       fs.writeFileSync(clientConfigFile, JSON.stringify(clientConfig, null, 2))
-      fs.writeFileSync(process.argv[3], JSON.stringify({
-        mcpServers: {
-          heimdall: {
-            command: "npx",
-            args: [process.argv[4] || "@shinzolabs/heimdall"]
-          }
-        }
-      }, null, 2))
+      const newClientConfig = process.argv[4]
+        ? { mcpServers: { heimdall: { command: "node", args: [process.argv[4]] } } }
+        : { mcpServers: { heimdall: { command: "npx", args: ["@shinzolabs/heimdall"] } } }
+      fs.writeFileSync(process.argv[3], JSON.stringify(newClientConfig, null, 2))
       logger("info", "config.json created")
     } else {
       logger("info", "No config file provided, creating empty config.json")

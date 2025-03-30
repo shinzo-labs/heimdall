@@ -21,12 +21,6 @@ importers:
       '@types/node':
         specifier: ^20.11.24
         version: 20.17.28
-      i:
-        specifier: ^0.3.7
-        version: 0.3.7
-      pnpm:
-        specifier: ^10.7.0
-        version: 10.7.0
       sdk:
         specifier: link:@types/@modelcontextprotocol/sdk
         version: link:@types/@modelcontextprotocol/sdk
@@ -241,10 +235,6 @@ packages:
     resolution: {integrity: sha512-FtwrG/euBzaEjYeRqOgly7G0qviiXoJWnvEH2Z1plBdXgbyjv34pHTSb9zoeHMyDy33+DWy5Wt9Wo+TURtOYSQ==}
     engines: {node: '>= 0.8'}
 
-  i@0.3.7:
-    resolution: {integrity: sha512-FYz4wlXgkQwIPqhzC5TdNMLSE5+GS1IIDJZY/1ZiEPCT2S3COUVZeT5OW4BmW4r5LHLQuOosSwsvnroG9GR59Q==}
-    engines: {node: '>=0.4'}
-
   iconv-lite@0.6.3:
     resolution: {integrity: sha512-4fCk79wshMdzMp2rH06qWrJE4iolqLhCUH+OiuIgU++RB0+94NlDL81atO7GX55uUKueo0txHNtvEyI6D7WdMw==}
     engines: {node: '>=0.10.0'}
@@ -329,11 +319,6 @@ packages:
   pkce-challenge@4.1.0:
     resolution: {integrity: sha512-ZBmhE1C9LcPoH9XZSdwiPtbPHZROwAnMy+kIFQVrnMCxY4Cudlz3gBOpzilgc0jOgRaiT3sIWfpMomW2ar2orQ==}
     engines: {node: '>=16.20.0'}
-
-  pnpm@10.7.0:
-    resolution: {integrity: sha512-a4Za1LYqHZhCth1nSjk5A7hx2SRJVPZSuIQsK1U8chdrJ49kxGPlLUD/+KujhcI1yMns9cx95P14uLttSWM6tg==}
-    engines: {node: '>=18.12'}
-    hasBin: true
 
   proxy-addr@2.0.7:
     resolution: {integrity: sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==}
@@ -705,8 +690,6 @@ snapshots:
       statuses: 2.0.1
       toidentifier: 1.0.1
 
-  i@0.3.7: {}
-
   iconv-lite@0.6.3:
     dependencies:
       safer-buffer: 2.1.2
@@ -760,8 +743,6 @@ snapshots:
   path-to-regexp@8.2.0: {}
 
   pkce-challenge@4.1.0: {}
-
-  pnpm@10.7.0: {}
 
   proxy-addr@2.0.7:
     dependencies:
