@@ -257,9 +257,7 @@ const convertJsonSchemaToZod = (schema: Record<string, any>): z.ZodTypeAny => {
 }
 
 const convertInputSchemaToParameters = (inputSchema: Record<string, any>): Record<string, z.ZodTypeAny> => {
-  if (!inputSchema?.properties || typeof inputSchema.properties !== 'object') {
-    return {}
-  }
+  if (!inputSchema?.properties || typeof inputSchema.properties !== 'object') return {}
 
   const parameters: Record<string, z.ZodTypeAny> = {}
   
@@ -292,13 +290,11 @@ const updateTools = async (controlConfig: ControlConfig) => {
     // Get tool details from each server
     const serverToolDetails: Record<string, Record<string, ToolDetails>> = {}
 
-    for (const [serverId, _] of Object.entries(controlConfig.authorizedMcpServers)) {
+    for (const serverId of Object.keys(controlConfig.authorizedMcpServers)) {
       try {
         const tools = await listServerTools(serverId)
         serverToolDetails[serverId] = {}
-        tools.forEach(tool => {
-          serverToolDetails[serverId][tool.name] = tool
-        })
+        tools.forEach(tool => serverToolDetails[serverId][tool.name] = tool)
       } catch (error: any) {
         logger("error", `Failed to fetch tool details from server ${serverId}: ${error.message}`)
         continue
@@ -358,22 +354,21 @@ const updateServerProcesses = async (clientConfig: ClientConfig) => {
     // Start new servers and update existing ones
     for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
       const currentProcess = serverProcesses.get(serverId)
-      
-      // Check if config changed for existing server
+
       if (currentProcess) {
-        const currentConfig = JSON.stringify({
-          command: serverConfig.command,
-          args: serverConfig.args,
-          env: serverConfig.env
-        })
-        
-        const existingConfig = JSON.stringify({
+        const newConfig = JSON.stringify({
           command: serverConfig.command,
           args: serverConfig.args,
           env: serverConfig.env
         })
 
-        if (currentConfig !== existingConfig) {
+        const existingConfig = JSON.stringify({
+          command: currentProcess.process.spawnargs[0],
+          args: currentProcess.process.spawnargs.slice(1),
+          env: serverConfig.env
+        })
+
+        if (newConfig !== existingConfig) {
           await stopServer(serverId)
           await startServer(serverId, serverConfig)
           logger("info", `Updated server: ${serverId}`)
@@ -496,4 +491,3 @@ const main = async () => {
 }
 
 await main()
-
