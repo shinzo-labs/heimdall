@@ -391,7 +391,7 @@ const discoverServerTools = async (serverId: string, serverConfig: ClientConfig[
     const tools = await listServerTools(serverId)
     await stopServer(serverId)
 
-    return tools.map(tool => tool.name)
+    return tools.map(tool => tool.name).sort()
   } catch (error: any) {
     logger("error", `Failed to discover tools for server ${serverId}: ${error.message}`)
     await stopServer(serverId)
