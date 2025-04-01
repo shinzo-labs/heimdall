@@ -18,7 +18,7 @@ See [Configuration](#configuration) for steps to modify `~/.heimdall/controls.js
 
 ### Via NPX (Recommended)
 
-1. Run setup script:
+1. Run setup script (generates an empty config if no path is given):
 ```bash
 npx @shinzolabs/heimdall setup <optional: path/to/current/config.json>
 ```
@@ -35,7 +35,7 @@ git clone https://github.com/shinzo-labs/heimdall.git
 cd heimdall && pnpm i
 ```
 
-3. Run setup script:
+3. Run setup script (generates an empty config if no path is given):
 ```bash
 pnpm run setup <optional: path/to/current/config.json> <optional: path to local Heimdall instance\'s `index.js` file, ex. `/path/to/local/heimdall/dist/index.js`>
 ```
