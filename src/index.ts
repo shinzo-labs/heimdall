@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import fs from 'fs'
 import path from 'path'
 import { spawn } from 'child_process'
+import crypto from 'crypto'
 import { logger } from './logger.js'
 import { CONFIG_DIR, LOG_DIR, POLL_INTERVAL, TOOL_EXECUTION_TIMEOUT } from './config.js'
 import { z } from 'zod'
@@ -30,6 +31,8 @@ type ServerProcess = {
   stdin: NodeJS.WritableStream
   stdout: NodeJS.ReadableStream
   stderr: NodeJS.ReadableStream
+  logFile: fs.WriteStream
+  configHash: string
 }
 
 type ToolDetails = {
@@ -55,140 +58,26 @@ type JsonRpcResponse = {
   }
 }
 
-const createServer = () => new McpServer({
+const MAX_RESPONSE_SIZE = 10 * 1024 * 1024 // 10MB
+
+
+const createHeimdallServer = () => new McpServer({
   name: "Heimdall",
   version: "1.0.0",
   description: "An MCP server that proxies other MCP servers and enables granular authorization control for your MCPs."
 })
 
-let server = createServer()
+let server: McpServer | null = null
 let transport: StdioServerTransport | null = null
-const serverProcesses = new Map<string, ServerProcess>()
-const registeredTools = new Set<string>()
+const serverSet = new Map<string, ServerProcess>()
+let currentClientConfigHash = ''
+let currentControlConfigHash = ''
+
+const sha256 = (data: string): string => crypto.createHash('sha256').update(data).digest('hex')
 
 const formatResponse = (response: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(response) }] })
 
 const getCompositeToolName = (serverId: string, toolName: string) => `${serverId}-${toolName}`
-
-const createJsonRpcRequest = (method: string, params: Record<string, any> = {}): JsonRpcRequest => ({
-  jsonrpc: "2.0",
-  id: Date.now(),
-  method,
-  params
-})
-
-const sendJsonRpcRequest = async <T>(
-  serverProcess: ServerProcess,
-  request: JsonRpcRequest,
-  timeout: number = TOOL_EXECUTION_TIMEOUT
-): Promise<T> => {
-  return new Promise((resolve, reject) => {
-    let responseData = ''
-
-    const responseHandler = (data: Buffer) => {
-      responseData += data.toString()
-
-      try {
-        const response = JSON.parse(responseData) as JsonRpcResponse
-
-        if (response.id === request.id) {
-          cleanup()
-
-          if (response.error) {
-            reject(new Error(response.error.message))
-          } else {
-            resolve(response.result)
-          }
-        }
-      } catch (e) {
-        // Incomplete JSON, keep waiting
-      }
-    }
-
-    const cleanup = () => {
-      serverProcess.stdout.removeListener('data', responseHandler)
-      clearTimeout(timeoutId)
-    }
-
-    const timeoutId = setTimeout(() => {
-      cleanup()
-      reject(new Error(`Request timed out for method ${request.method}`))
-    }, timeout)
-
-    serverProcess.stdout.on('data', responseHandler)
-    serverProcess.stdin.write(JSON.stringify(request) + '\n')
-  })
-}
-
-const listServerTools = async (serverId: string): Promise<ToolDetails[]> => {
-  const serverProcess = serverProcesses.get(serverId)
-  if (!serverProcess) {
-    logger("error", `Server ${serverId} not running, skipping tool details fetch`)
-    return []
-  }
-
-  const request = createJsonRpcRequest('tools/list')
-  const response = await sendJsonRpcRequest<{ tools: ToolDetails[] }>(serverProcess, request)
-  return response.tools || []
-}
-
-const executeToolOnServer = async (serverId: string, toolName: string, params: any): Promise<any> => {
-  try {
-    logger("info", `Executing tool: ${toolName} on server: ${serverId}`)
-
-    const serverProcess = serverProcesses.get(serverId)
-    if (!serverProcess) throw new Error(`Server ${serverId} not found`)
-
-    const request = createJsonRpcRequest('tools/call', { name: toolName, arguments: params })
-
-    const response = await sendJsonRpcRequest(serverProcess, request)
-    
-    logger("info", `Tool ${toolName} returned: ${JSON.stringify(response)}`)
-    return formatResponse(response)
-  } catch (error: any) {
-    logger("error", `Error executing tool ${toolName} on server ${serverId}: ${error.message}`)
-    return formatResponse({ error: error.message })
-  }
-}
-
-const startServer = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]) => {
-  try {
-    const logPath = path.join(LOG_DIR, `${serverId}.log`)
-    const logFile = fs.createWriteStream(logPath, { flags: 'a' })
-
-    const serverEnv = { ...process.env, ...serverConfig.env }
-
-    const childProcess = spawn(serverConfig.command, serverConfig.args, {
-      shell: true,
-      cwd: CONFIG_DIR,
-      env: serverEnv,
-      stdio: ['pipe', 'pipe', 'pipe']
-    })
-
-    childProcess.on('error', (error) => {
-      logger("error", `Server ${serverId} process error: ${error.message}`)
-    })
-
-    childProcess.on('exit', (code, signal) => {
-      logger("info", `Server ${serverId} exited with code ${code} and signal ${signal}`)
-      serverProcesses.delete(serverId)
-    })
-
-    childProcess.stdout.pipe(logFile)
-    childProcess.stderr.pipe(logFile)
-
-    serverProcesses.set(serverId, {
-      process: childProcess,
-      stdin: childProcess.stdin,
-      stdout: childProcess.stdout,
-      stderr: childProcess.stderr
-    })
-
-    logger("info", `Started server: ${serverId}`)
-  } catch (error: any) {
-    logger("error", `Failed to start server ${serverId}: ${error.message}`)
-  }
-}
 
 const loadConfig = async () => {
   try {
@@ -211,10 +100,86 @@ const loadConfig = async () => {
   }
 }
 
+const createJsonRpcRequest = (method: string, params: Record<string, any> = {}): JsonRpcRequest => ({
+  jsonrpc: "2.0",
+  id: Date.now(),
+  method,
+  params
+})
+
+const sendJsonRpcRequest = async <T>(
+  serverProcess: ServerProcess,
+  request: JsonRpcRequest,
+  timeout: number = TOOL_EXECUTION_TIMEOUT
+): Promise<T> => {
+  return new Promise((resolve, reject) => {
+    let responseData = ''
+    let timeoutId: NodeJS.Timeout
+    let isCleanedUp = false
+
+    const cleanup = () => {
+      if (isCleanedUp) return
+      isCleanedUp = true
+
+      serverProcess.stdout.removeListener('data', responseHandler)
+      clearTimeout(timeoutId)
+    }
+
+    const responseHandler = (data: Buffer) => {
+      if (isCleanedUp) return
+
+      // Limit response size to prevent memory issues
+      if (responseData.length > MAX_RESPONSE_SIZE) { // 10MB limit
+        cleanup()
+        reject(new Error(`Response too large for method ${request.method}`))
+        return
+      }
+
+      responseData += data.toString()
+
+      try {
+        const response = JSON.parse(responseData) as JsonRpcResponse
+
+        if (response.id === request.id) {
+          cleanup()
+
+          if (response.error) {
+            reject(new Error(response.error.message))
+          } else {
+            resolve(response.result)
+          }
+        }
+      } catch (e) {
+        // Incomplete JSON, keep waiting
+      }
+    }
+
+    timeoutId = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Request timed out for method ${request.method}`))
+    }, timeout)
+
+    // Handle process errors
+    const errorHandler = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+
+    serverProcess.process.on('error', errorHandler)
+    serverProcess.stdout.on('data', responseHandler)
+
+    // Write the request
+    try {
+      serverProcess.stdin.write(JSON.stringify(request) + '\n')
+    } catch (error) {
+      cleanup()
+      reject(error)
+    }
+  })
+}
+
 const convertJsonSchemaToZod = (schema: Record<string, any>): z.ZodTypeAny => {
-  if (!schema || typeof schema !== 'object') {
-    return z.any()
-  }
+  if (!schema || typeof schema !== 'object') return z.any()
 
   let validator: z.ZodTypeAny
 
@@ -238,8 +203,8 @@ const convertJsonSchemaToZod = (schema: Record<string, any>): z.ZodTypeAny => {
       const shape: Record<string, z.ZodTypeAny> = {}
       for (const [key, value] of Object.entries(schema.properties)) {
         const propertySchema = convertJsonSchemaToZod(value as Record<string, any>)
-        shape[key] = schema.required?.includes(key) 
-          ? propertySchema 
+        shape[key] = schema.required?.includes(key)
+          ? propertySchema
           : propertySchema.optional()
       }
 
@@ -261,7 +226,7 @@ const convertInputSchemaToParameters = (inputSchema: Record<string, any>): Recor
   if (!inputSchema?.properties || typeof inputSchema.properties !== 'object') return {}
 
   const parameters: Record<string, z.ZodTypeAny> = {}
-  
+
   for (const [key, value] of Object.entries(inputSchema.properties)) {
     parameters[key] = convertJsonSchemaToZod(value as Record<string, any>)
   }
@@ -269,121 +234,16 @@ const convertInputSchemaToParameters = (inputSchema: Record<string, any>): Recor
   return parameters
 }
 
-const updateTools = async (controlConfig: ControlConfig) => {
-  try {
-    const currentToolNames = new Set<string>()
-    for (const [serverId, serverAuth] of Object.entries(controlConfig.authorizedMcpServers)) {
-      for (const toolName of serverAuth.authorizedTools) {
-        currentToolNames.add(getCompositeToolName(serverId, toolName))
-      }
-    }
-
-    const needsRestart = Array.from(registeredTools).some(toolName => !currentToolNames.has(toolName))
-
-    if (needsRestart) {
-      logger("info", "Tools were removed, creating new server instance")
-      server = createServer()
-      transport = new StdioServerTransport()
-      await server.connect(transport)
-      registeredTools.clear()
-    }
-
-    // Get tool details from each server
-    const serverToolDetails: Record<string, Record<string, ToolDetails>> = {}
-
-    for (const serverId of Object.keys(controlConfig.authorizedMcpServers)) {
-      try {
-        const tools = await listServerTools(serverId)
-        serverToolDetails[serverId] = {}
-        tools.forEach(tool => serverToolDetails[serverId][tool.name] = tool)
-      } catch (error: any) {
-        logger("error", `Failed to fetch tool details from server ${serverId}: ${error.message}`)
-        continue
-      }
-    }
-
-    for (const [serverId, serverAuth] of Object.entries(controlConfig.authorizedMcpServers)) {
-      const serverTools = serverToolDetails[serverId]
-
-      for (const toolName of serverAuth.authorizedTools) {
-        const compositeToolName = getCompositeToolName(serverId, toolName)
-        if (!needsRestart && registeredTools.has(compositeToolName)) continue
-
-        const toolDetails = serverTools?.[toolName]
-        
-        server.tool(
-          compositeToolName,
-          toolDetails?.description || `Authorized tool: ${toolName} from server ${serverId}`,
-          toolDetails?.inputSchema 
-            ? convertInputSchemaToParameters(toolDetails.inputSchema)
-            : {},
-          async (params: any) => executeToolOnServer(serverId, toolName, params)
-        )
-
-        registeredTools.add(compositeToolName)
-      }
-    }
-
-    logger("info", needsRestart ? "MCP server restarted with updated tools" : "Updated tools from controls.json")
-  } catch (error: any) {
-    logger("error", `Failed to update tools: ${error.message}`)
+const listServerTools = async (serverId: string): Promise<ToolDetails[]> => {
+  const serverProcess = serverSet.get(serverId)
+  if (!serverProcess) {
+    logger("error", `Server ${serverId} not running, skipping tool details fetch`)
+    return []
   }
-}
 
-const stopServer = async (serverId: string) => {
-  const serverProcess = serverProcesses.get(serverId)
-  if (!serverProcess) return
-
-  logger("info", `Stopping server: ${serverId}`)
-  serverProcess.process.kill()
-  serverProcesses.delete(serverId)
-}
-
-const updateServerProcesses = async (clientConfig: ClientConfig) => {
-  try {
-    const currentServerIds = new Set(serverProcesses.keys())
-    const newServerIds = new Set(Object.keys(clientConfig.mcpServers))
-
-    // Stop removed servers
-    for (const serverId of currentServerIds) {
-      if (!newServerIds.has(serverId)) {
-        await stopServer(serverId)
-        logger("info", `Removed server: ${serverId}`)
-      }
-    }
-
-    // Start new servers and update existing ones
-    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
-      const currentProcess = serverProcesses.get(serverId)
-
-      if (currentProcess) {
-        const newConfig = JSON.stringify({
-          command: serverConfig.command,
-          args: serverConfig.args,
-          env: serverConfig.env
-        })
-
-        const existingConfig = JSON.stringify({
-          command: currentProcess.process.spawnargs[0],
-          args: currentProcess.process.spawnargs.slice(1),
-          env: serverConfig.env
-        })
-
-        if (newConfig !== existingConfig) {
-          await stopServer(serverId)
-          await startServer(serverId, serverConfig)
-          logger("info", `Updated server: ${serverId}`)
-        }
-      } else {
-        // Start new server
-        await startServer(serverId, serverConfig)
-        logger("info", `Added new server: ${serverId}`)
-      }
-    }
-  } catch (error: any) {
-    logger("error", `Failed to update server processes: ${error.message}`)
-    throw error
-  }
+  const request = createJsonRpcRequest('tools/list')
+  const response = await sendJsonRpcRequest<{ tools: ToolDetails[] }>(serverProcess, request)
+  return response.tools || []
 }
 
 const discoverServerTools = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]): Promise<string[]> => {
@@ -397,6 +257,185 @@ const discoverServerTools = async (serverId: string, serverConfig: ClientConfig[
     logger("error", `Failed to discover tools for server ${serverId}: ${error.message}`)
     await stopServer(serverId)
     return []
+  }
+}
+
+const executeToolOnServer = async (serverId: string, toolName: string, params: any): Promise<any> => {
+  try {
+    logger("info", `Executing tool: ${toolName} on server: ${serverId}`)
+
+    const serverProcess = serverSet.get(serverId)
+    if (!serverProcess) throw new Error(`Server ${serverId} not found`)
+
+    const request = createJsonRpcRequest('tools/call', { name: toolName, arguments: params })
+
+    const response = await sendJsonRpcRequest(serverProcess, request)
+
+    logger("info", `Tool ${toolName} returned: ${JSON.stringify(response)}`)
+    return formatResponse(response)
+  } catch (error: any) {
+    logger("error", `Error executing tool ${toolName} on server ${serverId}: ${error.message}`)
+    return formatResponse({ error: error.message })
+  }
+}
+
+const startServer = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]) => {
+  try {
+    logger("info", `Starting server: ${serverId}`)
+
+    const logPath = path.join(LOG_DIR, `${serverId}.log`)
+    const logFile = fs.createWriteStream(logPath, { flags: 'a' })
+
+    const serverEnv = { ...process.env, ...serverConfig.env }
+
+    const childProcess = spawn(serverConfig.command, serverConfig.args, {
+      shell: true,
+      cwd: CONFIG_DIR,
+      env: serverEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true
+    })
+
+    childProcess.on('error', (error) => {
+      logger("error", `Server ${serverId} process error: ${error.message}`)
+    })
+
+    childProcess.on('exit', (code, signal) => {
+      logger("info", `Server ${serverId} exited with code ${code} and signal ${signal}`)
+      const serverProcess = serverSet.get(serverId)
+      if (serverProcess) {
+        serverProcess.logFile.end()
+        serverSet.delete(serverId)
+      }
+    })
+
+    childProcess.stdout.pipe(logFile)
+    childProcess.stderr.pipe(logFile)
+
+    serverSet.set(serverId, {
+      process: childProcess,
+      stdin: childProcess.stdin,
+      stdout: childProcess.stdout,
+      stderr: childProcess.stderr,
+      logFile,
+      configHash: sha256(JSON.stringify(serverConfig))
+    })
+
+    logger("info", `Started server: ${serverId}`)
+  } catch (error: any) {
+    logger("error", `Failed to start server ${serverId}: ${error.message}`)
+  }
+}
+
+const stopServer = async (serverId: string) => {
+  const serverProcess = serverSet.get(serverId)
+  if (!serverProcess) {
+    logger("info", `Server ${serverId} not running, skipping stop`)
+    return
+  }
+
+  logger("info", `Stopping server: ${serverId}`)
+
+  serverProcess.logFile.end()
+
+  // Force kill the process and its children
+  try {
+    process.kill(-serverProcess.process.pid!, 'SIGKILL')
+  } catch (error) {
+    // Fallback if process group kill fails
+    serverProcess.process.kill('SIGKILL')
+  }
+
+  serverSet.delete(serverId)
+  logger("info", `Removed server: ${serverId}`)
+}
+
+const refreshChildServers = async (clientConfig: ClientConfig) => {
+  logger("info", "Refreshing child servers")
+
+  try {
+    for (const serverId of serverSet.keys()) {
+      if (!clientConfig.mcpServers[serverId]) {
+        await stopServer(serverId)
+      }
+    }
+
+    // Start new servers and update existing ones
+    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
+      const currentProcess = serverSet.get(serverId)
+
+      if (currentProcess) {
+        const newConfigHash = sha256(JSON.stringify(serverConfig))
+
+        const existingConfigHash = currentProcess.configHash
+
+        if (newConfigHash !== existingConfigHash) {
+          await stopServer(serverId)
+          await startServer(serverId, serverConfig)
+        }
+      } else {
+        await startServer(serverId, serverConfig)
+      }
+    }
+
+    logger("info", "Child servers refreshed successfully")
+  } catch (error: any) {
+    logger("error", `Failed to refresh child servers: ${error.message}`)
+    throw error
+  }
+}
+
+const refreshHeimdall = async (controlConfig: ControlConfig) => {
+  logger("info", "Refreshing Heimdall")
+
+  try {
+    if (server) server.close() // TODO double-check if this is needed
+    server = createHeimdallServer()
+    transport = new StdioServerTransport()
+
+    const serverToolDetails: Record<string, Record<string, ToolDetails>> = {}
+
+    for (const serverId of Object.keys(controlConfig.authorizedMcpServers)) {
+      try {
+        const tools = await listServerTools(serverId)
+        serverToolDetails[serverId] = {}
+        for (const tool of tools) {
+          serverToolDetails[serverId][tool.name] = tool
+        }
+      } catch (error: any) {
+        logger("error", `Failed to fetch tool details from server ${serverId}: ${error.message}`)
+        continue
+      }
+    }
+
+    for (const [serverId, serverAuth] of Object.entries(controlConfig.authorizedMcpServers)) {
+      const serverTools = serverToolDetails[serverId]
+
+      for (const toolName of serverAuth.authorizedTools) {
+        logger("info", `Checking tool: ${toolName} from server ${serverId}`)
+        const compositeToolName = getCompositeToolName(serverId, toolName)
+
+        const toolDetails = serverTools?.[toolName]
+
+        logger("info", `Adding tool: ${compositeToolName}`)
+        server.tool(
+          compositeToolName,
+          toolDetails?.description || `Authorized tool: ${toolName} from server ${serverId}`,
+          toolDetails?.inputSchema
+            ? convertInputSchemaToParameters(toolDetails.inputSchema)
+            : {},
+          async (params: any) => executeToolOnServer(serverId, toolName, params)
+        )
+
+        logger("info", `Added tool: ${compositeToolName}`)
+      }
+    }
+
+    await server.connect(transport)
+
+    logger("info", "Heimdall refreshed successfully")
+  } catch (error: any) {
+    logger("error", `Failed to refresh Heimdall: ${error.message}`)
   }
 }
 
@@ -469,6 +508,37 @@ const setup = async () => {
   }
 }
 
+const refreshSystem = async () => {
+  try {
+    const { clientConfig, controlConfig } = await loadConfig()
+    const newClientConfigHash = sha256(JSON.stringify(clientConfig))
+    const newControlConfigHash = sha256(JSON.stringify(controlConfig))
+
+    const clientConfigChanged = newClientConfigHash !== currentClientConfigHash
+    const controlConfigChanged = newControlConfigHash !== currentControlConfigHash
+
+    if (clientConfigChanged) {
+      logger("info", "Client config changed, updating server processes")
+      await refreshChildServers(clientConfig)
+    } else {
+      logger("info", "Client config unchanged, skipping server processes update")
+    }
+
+    if (clientConfigChanged || controlConfigChanged) {
+      logger("info", "Client or control config changed, refreshing Heimdall")
+      await refreshHeimdall(controlConfig)
+    } else {
+      logger("info", "Client and control config unchanged, skipping Heimdall refresh")
+    }
+
+    currentClientConfigHash = newClientConfigHash
+    currentControlConfigHash = newControlConfigHash
+  } catch (error: any) {
+    logger("error", `System refresh failed: ${error.message}`)
+    throw error
+  }
+}
+
 const main = async () => {
   try {
     if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
@@ -479,26 +549,11 @@ const main = async () => {
       process.exit(0)
     }
 
-    const { clientConfig, controlConfig } = await loadConfig()
+    logger("info", "Initializing Heimdall")
 
-    await updateServerProcesses(clientConfig)
-    await updateTools(controlConfig)
+    await refreshSystem()
 
-    transport = new StdioServerTransport()
-    if (transport) {
-      await server.connect(transport)
-    }
-
-    setInterval(async () => {
-      try {
-        const { clientConfig, controlConfig } = await loadConfig()
-
-        await updateServerProcesses(clientConfig)
-        await updateTools(controlConfig)
-      } catch (error: any) {
-        logger("error", `Polling update failed: ${error.message}`)
-      }
-    }, POLL_INTERVAL)
+    setInterval(async () => await refreshSystem(), POLL_INTERVAL)
 
     logger("info", "Heimdall initialized successfully")
   } catch (error: any) {
