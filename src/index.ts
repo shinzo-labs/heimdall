@@ -534,7 +534,6 @@ const refreshSystem = async () => {
     currentControlConfigHash = newControlConfigHash
   } catch (error: any) {
     logger("error", `System refresh failed: ${error.message}`)
-    throw error
   }
 }
 
