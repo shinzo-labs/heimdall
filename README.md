@@ -32,7 +32,7 @@ git clone https://github.com/shinzo-labs/heimdall.git
 
 2. Install and build dependencies:
 ```bash
-cd heimdall && pnpm i
+cd heimdall && pnpm i && pnpm build
 ```
 
 3. Run setup script (generates an empty config if no path is given):
