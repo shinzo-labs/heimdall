@@ -70,6 +70,23 @@ The schema for controls looks like this:
     }
 ```
 
+## Troubleshooting
+
+### Available Tools
+
+Some MCP Clients have limits on the number of tools available to agents at a given time. For example, Cursor currently only supports up to 40 tools, so the sum of `authorizedTools` in `controls.json` cannot exceed this amount.
+
+### Logging
+
+For logs on running instances, see `~/.heimdall/logs`. Logs for each MCP client's instance of Heimdall and child servers are stored in separate directories identified by random UUIDs.
+
+### Orphaned Child Processes
+
+If your MCP clients shut down unexpectedly or fail to send the correct `SIGTERM` signal to Heimdall before closing, there may be orphaned `node` (and `npm`) processes still running on your device afterward. For the time being these must be killed manually with a force stop. If there are no other `node` processes running in the background on your device, you can use this command as post-cleanup:
+```bash
+pkill -aif node
+```
+
 ## Contributing
 
 Contributions are welcomed and encouraged. Contact austin@shinzolabs.com with any questions, comments or concerns.
