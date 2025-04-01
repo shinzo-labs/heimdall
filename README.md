@@ -37,7 +37,7 @@ cd heimdall && pnpm i
 
 3. Run setup script:
 ```bash
-pnpm run setup <optional: path/to/current/config.json> <optional: node command to run the server from the local instance ex. `/path/to/local/heimdall/dist/index.js`>
+pnpm run setup <optional: path/to/current/config.json> <optional: path to local Heimdall instance\'s `index.js` file, ex. `/path/to/local/heimdall/dist/index.js`>
 ```
 
 ## Configuration
@@ -48,7 +48,7 @@ To add, or update available servers, simply update the configuration at `~/.heim
 
 ### Edit Authorized Tools
 
-To add authorized tools to a new or existing server, add them as needed to `~/.heimdall/controls.json` and Heimdall will update its internal config after a few seconds. If your MCP client supports dynamic tool list caching, you should see it update the authorized tools automatically. Other clients may require a restart to see the new tools.
+To add authorized tools to a new or existing server, add them as needed to `~/.heimdall/controls.json` and Heimdall will update its internal config after a few seconds. If your MCP client supports dynamic tool list caching, you should see it update the authorized tools automatically. Other clients (ex. Claude Desktop) may require a restart to see the new tools.
 
 The schema for controls looks like this:
 ```javascript
