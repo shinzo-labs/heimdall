@@ -1,0 +1,18 @@
+{
+  "name": "@shinzolabs/test-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A test server explicitly for integration testing.",
+  "bin": {
+    "test-server": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.4"
+  },
+  "author": "Austin Born (austin@shinzolabs.com)",
+  "license": "MIT"
+}
