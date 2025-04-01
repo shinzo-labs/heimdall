@@ -8,8 +8,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "setup": "node dist/index.js setup",
+    "build:test": "tsc -p test/tsconfig.json",
+    "prepare": "npm run build",
+    "pretest": "npm run build && npm run build:test",
     "start": "node dist/index.js",
+    "setup": "node dist/index.js setup",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.integration.config.js"
   },
   "dependencies": {

@@ -64,7 +64,7 @@ describe('Heimdall Setup Integration Tests', () => {
     }
   })
 
-  describe('First time setup', () => {
+  describe('When running setup for the first time', () => {
     it('should copy config from client config path and create default heimdall config', async () => {
       const newConfig = {
         mcpServers: {
@@ -101,7 +101,7 @@ describe('Heimdall Setup Integration Tests', () => {
     })
 
     it('should use custom command when second argument is provided', async () => {
-      const customCommand = './custom-heimdall.js'
+      const customCommand = path.resolve(process.cwd(), 'dist/index.js')
       const newConfig = {
         mcpServers: {
           heimdall: {
@@ -119,9 +119,23 @@ describe('Heimdall Setup Integration Tests', () => {
       const updatedOriginalConfig = readJsonFile(configPath)
       expect(updatedOriginalConfig).toEqual(newConfig)
     })
+
+    it('should throw an error if the source config file is not found', async () => {
+      const configPath = createTempClientConfigFile(originalConfig)
+
+      const result = await runHeimdallSetup([configPath + '/nonexistent'])
+      expect(result.code).toBe(1)
+    })
+
+    it('should throw an error if the heimdall executable is not found', async () => {
+      const configPath = createTempClientConfigFile(originalConfig)
+
+      const result = await runHeimdallSetup([configPath, 'nonexistent'])
+      expect(result.code).toBe(1)
+    })
   })
 
-  describe('Setup with existing files', () => {
+  describe('When running setup with existing files', () => {
     it('should not modify existing config.json but create controls.json if missing', async () => {
       fs.writeFileSync(getConfigPath(), JSON.stringify(originalConfig, null, 2))
 

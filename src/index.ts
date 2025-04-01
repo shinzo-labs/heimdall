@@ -153,7 +153,8 @@ const executeToolOnServer = async (serverId: string, toolName: string, params: a
 
 const startServer = async (serverId: string, serverConfig: ClientConfig['mcpServers'][string]) => {
   try {
-    const logFile = fs.createWriteStream(path.join(LOG_DIR, `${serverId}.log`))
+    const logPath = path.join(LOG_DIR, `${serverId}.log`)
+    const logFile = fs.createWriteStream(logPath, { flags: 'a' })
 
     const serverEnv = { ...process.env, ...serverConfig.env }
 
@@ -400,55 +401,71 @@ const discoverServerTools = async (serverId: string, serverConfig: ClientConfig[
 }
 
 const setup = async () => {
-  logger("info", "Setting up Heimdall")
+  console.log("Setting up Heimdall")
 
-  const clientConfigFile = path.join(CONFIG_DIR, "config.json")
+  const sourceConfigFile = process.argv[3]
+  const heimdallExecutablePath = process.argv[4]
+
+  if (sourceConfigFile && !fs.existsSync(sourceConfigFile)) {
+    console.log(`Source config file not found: ${sourceConfigFile}`)
+    process.exit(1)
+  }
+
+  if (heimdallExecutablePath && !fs.existsSync(heimdallExecutablePath)) {
+    console.log(`Heimdall executable not found: ${heimdallExecutablePath}`)
+    process.exit(1)
+  }
+
   let clientConfig: ClientConfig = { mcpServers: {} }
-  
+
+  // Create config.json
+  const clientConfigFile = path.join(CONFIG_DIR, "config.json")
   if (fs.existsSync(clientConfigFile)) {
-    logger("info", "config.json already exists, skipping config.json creation")
+    console.log(`${clientConfigFile} already exists, skipping config.json creation`)
     clientConfig = JSON.parse(fs.readFileSync(clientConfigFile, "utf-8"))
   } else {
-    if (process.argv[3]) {
-      logger("info", `Using config file: ${process.argv[3]}`)
-      clientConfig = JSON.parse(fs.readFileSync(process.argv[3], "utf-8"))
+    if (sourceConfigFile) {
+      console.log(`Using source config file: ${sourceConfigFile}`)
+      clientConfig = JSON.parse(fs.readFileSync(sourceConfigFile, "utf-8"))
       fs.writeFileSync(clientConfigFile, JSON.stringify(clientConfig, null, 2))
-      const newClientConfig = process.argv[4]
-        ? { mcpServers: { heimdall: { command: "node", args: [process.argv[4]] } } }
-        : { mcpServers: { heimdall: { command: "npx", args: ["@shinzolabs/heimdall"] } } }
-      fs.writeFileSync(process.argv[3], JSON.stringify(newClientConfig, null, 2))
-      logger("info", "config.json created")
+      console.log(`${clientConfigFile} created`)
     } else {
-      logger("info", "No config file provided, creating empty config.json")
+      console.log("No source config file provided, creating empty config.json")
       fs.writeFileSync(clientConfigFile, JSON.stringify(clientConfig, null, 2))
-      logger("info", "Empty config.json created")
+      console.log(`${clientConfigFile} created`)
     }
   }
 
+  // Update original MCP server config (if provided)
+  if (sourceConfigFile) {
+    const newClientConfig = heimdallExecutablePath
+      ? { mcpServers: { heimdall: { command: "node", args: [heimdallExecutablePath] } } }
+      : { mcpServers: { heimdall: { command: "npx", args: ["@shinzolabs/heimdall"] } } }
+    fs.writeFileSync(sourceConfigFile, JSON.stringify(newClientConfig, null, 2))
+    console.log(`${sourceConfigFile} configured with "${heimdallExecutablePath || "@shinzolabs/heimdall"}"`)
+  }
+
+  // Create controls.json
   const controlsConfigFile = path.join(CONFIG_DIR, "controls.json")
-  if (!fs.existsSync(controlsConfigFile)) {
-    logger("info", "Discovering available tools from all servers...")
-    
+  if (fs.existsSync(controlsConfigFile)) {
+    console.log(`${controlsConfigFile} already exists, skipping controls.json creation`)
+  } else {
     const authorizedMcpServers: ControlConfig['authorizedMcpServers'] = {}
-    
+
     // Discover tools for each server
-    for (const [serverId, serverConfig] of Object.entries(clientConfig.mcpServers)) {
+    const sortedServers = Object.entries(clientConfig.mcpServers).sort((a, b) => a[0].localeCompare(b[0]))
+    for (const [serverId, serverConfig] of sortedServers) {
       const tools = await discoverServerTools(serverId, serverConfig)
       if (tools.length > 0) {
-        authorizedMcpServers[serverId] = {
-          authorizedTools: tools
-        }
-        logger("info", `Discovered ${tools.length} tools from server ${serverId}`)
+        authorizedMcpServers[serverId] = { authorizedTools: tools }
+        console.log(`Discovered ${tools.length} tools from server ${serverId}`)
       }
     }
 
-    const controlsConfig: ControlConfig = { authorizedMcpServers }
-    fs.writeFileSync(controlsConfigFile, JSON.stringify(controlsConfig, null, 2))
+    fs.writeFileSync(controlsConfigFile, JSON.stringify({ authorizedMcpServers }, null, 2))
 
     const toolCount = Object.values(authorizedMcpServers).reduce((acc, server) => acc + server.authorizedTools.length, 0)
-    logger("info", `Created controls.json with ${toolCount} discovered tools`)
-  } else {
-    logger("info", "controls.json already exists, skipping controls.json creation")
+    console.log(`Created ${controlsConfigFile} with ${toolCount} tools`)
   }
 }
 
@@ -486,6 +503,7 @@ const main = async () => {
     logger("info", "Heimdall initialized successfully")
   } catch (error: any) {
     logger("error", `Initialization failed: ${error.message}`)
+    console.log(error)
     process.exit(1)
   }
 }
