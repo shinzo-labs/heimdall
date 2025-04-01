@@ -17,7 +17,7 @@ COPY --chown=node:node ["./package.json", "./pnpm-lock.yaml", "./"]
 RUN pnpm fetch
 RUN pnpm install -r --offline
 
-COPY --chown=node:node ["./src", "./tsconfig.json", "./"]
+COPY --chown=node:node . .
 
 RUN pnpm run build
 
