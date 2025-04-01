@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import fs from 'fs'
@@ -5,7 +7,7 @@ import path from 'path'
 import { spawn } from 'child_process'
 import crypto from 'crypto'
 import { logger } from './logger.js'
-import { CONFIG_DIR, INSTANCE_ID, LOG_DIR, POLL_INTERVAL, TOOL_EXECUTION_TIMEOUT } from './config.js'
+import { CONFIG_DIR, LOG_DIR, POLL_INTERVAL, TOOL_EXECUTION_TIMEOUT } from './config.js'
 import { z } from 'zod'
 
 type ClientConfig = {
@@ -62,7 +64,7 @@ const MAX_RESPONSE_SIZE = 10 * 1024 * 1024 // 10MB
 
 const createHeimdallServer = () => new McpServer({
   name: "Heimdall",
-  version: "1.0.0",
+  version: "1.0.1",
   description: "An MCP server that proxies other MCP servers and enables granular authorization control for your MCPs."
 })
 

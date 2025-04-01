@@ -1,6 +1,6 @@
 {
   "name": "@shinzolabs/heimdall",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "An MCP server that proxies other MCP servers and enables granular authorization control for your MCPs.",
   "bin": {
@@ -11,8 +11,8 @@
     "build:test": "tsc -p test/tsconfig.json",
     "prepare": "npm run build",
     "pretest": "npm run build && npm run build:test",
-    "start": "node dist/index.js",
-    "setup": "node dist/index.js setup",
+    "start": "node ./dist/index.js",
+    "setup": "node ./dist/index.js setup",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest --config jest.integration.config.js"
   },
   "dependencies": {
