@@ -4,7 +4,7 @@ Heimdall
 [![smithery badge](https://smithery.ai/badge/@shinzo-labs/heimdall)](https://smithery.ai/server/@shinzo-labs/heimdall)
 
 Heimdall is a lightweight service to manage local [MCP Servers](https://modelcontextprotocol.io/introduction) and can be installed with a single `npx` command. Specific MCP server tools can be authorized for your MCP clients, and the same config is accessible to all MCP clients on your device.
-he
+
 ## Installation
 
 ⚠️ <strong>NOTE:</strong> We strongly recommend backing up your MCP server config before installation to protect against unexpected loss of credentials.
