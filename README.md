@@ -3,8 +3,8 @@ Heimdall
 [![npm version](https://badge.fury.io/js/@shinzolabs%2Fheimdall.svg)](https://badge.fury.io/js/@shinzolabs%2Fheimdall)
 [![smithery badge](https://smithery.ai/badge/@shinzo-labs/heimdall)](https://smithery.ai/server/@shinzo-labs/heimdall)
 
-Heimdall is a lightweight service to manage local [MCP Servers]((https://modelcontextprotocol.io/introduction)) and can be installed with a single `npx` command. Specific MCP server tools can be authorized for your MCP clients, and the same config is accessible to all MCP clients on your device.
-
+Heimdall is a lightweight service to manage local [MCP Servers](https://modelcontextprotocol.io/introduction) and can be installed with a single `npx` command. Specific MCP server tools can be authorized for your MCP clients, and the same config is accessible to all MCP clients on your device.
+he
 ## Installation
 
 ⚠️ <strong>NOTE:</strong> We strongly recommend backing up your MCP server config before installation to protect against unexpected loss of credentials.
@@ -19,7 +19,7 @@ See [Configuration](#configuration) for steps to modify `~/.heimdall/controls.js
 ### Via NPX (Recommended)
 
 1. Run setup script (generates an empty config if no path is given):
-```bash
+```
 npx @shinzolabs/heimdall setup <optional: path/to/current/config.json>
 ```
 
@@ -36,8 +36,8 @@ cd heimdall && pnpm i && pnpm build
 ```
 
 3. Run setup script (generates an empty config if no path is given):
-```bash
-pnpm run setup <optional: path/to/current/config.json> <optional: path to local Heimdall instance\'s `index.js` file, ex. `/path/to/local/heimdall/dist/index.js`>
+```
+pnpm run setup <optional: path/to/current/config.json> <optional: path to `index.js` file in local Heimdall instance, ex. `/path/to/local/heimdall/dist/index.js`>
 ```
 
 ## Configuration
