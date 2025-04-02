@@ -70,6 +70,22 @@ This is the schema for `~/.heimdall/controls.json`:
     }
 ```
 
+### Multiple MCP Clients
+
+If you run multiple MCP clients on your device, you can set the following `config.json` for each new client to enable the same authorized tools across all of them (assuming Heimdall has already been set up on the device):
+```javascript
+{
+  "mcpServers": {
+    "heimdall": {
+      "command": "npx",
+      "args": [
+        "@shinzolabs/heimdall"
+      ]
+    }
+  }
+}
+```
+
 ## Troubleshooting
 
 ### Available Tools
