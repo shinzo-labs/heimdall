@@ -1,6 +1,6 @@
 {
   "name": "@shinzolabs/heimdall",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "An MCP server that proxies other MCP servers and enables granular authorization control for your MCPs.",
   "bin": {
