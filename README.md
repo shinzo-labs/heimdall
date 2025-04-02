@@ -1,4 +1,4 @@
-Heimdall
+# Heimdall
 
 [![npm version](https://badge.fury.io/js/@shinzolabs%2Fheimdall.svg)](https://badge.fury.io/js/@shinzolabs%2Fheimdall)
 [![smithery badge](https://smithery.ai/badge/@shinzo-labs/heimdall)](https://smithery.ai/server/@shinzo-labs/heimdall)
