@@ -64,7 +64,7 @@ const MAX_RESPONSE_SIZE = 10 * 1024 * 1024 // 10MB
 
 const createHeimdallServer = () => new McpServer({
   name: "Heimdall",
-  version: "1.0.2",
+  version: "1.0.3",
   description: "An MCP server that proxies other MCP servers and enables granular authorization control for your MCPs."
 })
 
