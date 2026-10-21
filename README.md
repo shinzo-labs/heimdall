@@ -1,7 +1,7 @@
 # Heimdall
 
 [![npm version](https://badge.fury.io/js/@shinzolabs%2Fheimdall.svg)](https://badge.fury.io/js/@shinzolabs%2Fheimdall)
-[![smithery badge](https://smithery.ai/badge/@shinzo-labs/heimdall)](https://smithery.ai/server/@shinzo-labs/heimdall)
+[![Listed on LightNow](https://lightnow.ai/badge/io.github.shinzo-labs/heimdall?variant=listed)](https://lightnow.ai/servers/io.github.shinzo-labs/heimdall)
 
 Heimdall is a lightweight service to manage local [MCP Servers](https://modelcontextprotocol.io/introduction) and can be installed with a single `npx` command. Specific MCP server tools can be authorized for your MCP clients, and the same config is accessible to all MCP clients on your device.
 
